@@ -28,7 +28,7 @@ impl Responder for ResponseWrapper {
         use crate::Response::*;
         match self.0 {
             Ok => web::Json(true).respond_to(req),
-            ListEvaluations(payload) => web::Json(payload).respond_to(req),
+            SearchEvaluations(payload) => web::Json(payload).respond_to(req),
             ListProjects(payload) => web::Json(payload).respond_to(req),
             ProjectInfo(payload) => web::Json(payload).respond_to(req),
             ProjectUpdateJobsets(payload) => web::Json(payload).respond_to(req),
@@ -65,8 +65,8 @@ macro_rules! r {
 }
 
 r!(
-    list_evaluations(body: web::Json<EvaluationSearch>) =>
-        Request::ListEvaluations(body.into_inner());
+    search_evaluations(body: web::Json<EvaluationSearch>) =>
+        Request::SearchEvaluations(body.into_inner());
 
     create_project(path: web::Path<String>, body: web::Json<ProjectDecl>) => {
         let name = path.into_inner();
@@ -154,17 +154,17 @@ r!(
             Job::Info,
         );
 
-    job_log_begin(path: web::Path<(String,String,i64,String,String)>) =>
-        Request::Job(
-            handles::job(path.into_inner()),
-            Job::LogBegin,
-        );
+    // job_log_begin(path: web::Path<(String,String,i64,String,String)>) =>
+    //     Request::Job(
+    //         handles::job(path.into_inner()),
+    //         Job::LogBegin,
+    //     );
 
-    job_log_end(path: web::Path<(String,String,i64,String,String)>) =>
-        Request::Job(
-            handles::job(path.into_inner()),
-            Job::LogEnd,
-        );
+    // job_log_end(path: web::Path<(String,String,i64,String,String)>) =>
+    //     Request::Job(
+    //         handles::job(path.into_inner()),
+    //         Job::LogEnd,
+    //     );
 
     login(body: web::Json<String>) =>
         Request::Login(body.into_inner());
@@ -185,7 +185,7 @@ async fn dist(
         _ => Err(ResponseErrorWrapper(ResponseError::InternalError)),
     }?;
     if info.dist {
-        Ok(NamedFile::open_async(format!("{}/{}", info.build_out, path)).await)
+        Ok(NamedFile::open_async(format!("{}/{}", info.build.out, path)).await)
     } else {
         Err(ResponseErrorWrapper(ResponseError::BadRequest(
             "typhonDist is not set".into(),
@@ -210,6 +210,49 @@ async fn drv_log(path: web::Path<String>) -> Option<HttpResponse> {
             Ok(log) => Some(HttpResponse::Ok().body(web::Bytes::from(log))),
             Err(_) => None,
         },
+    }
+}
+
+/// Serves the log in live for derivation [path].
+async fn job_live_log(
+    user: User,
+    handle: web::Json<typhon_types::handles::Log>,
+) -> Option<HttpResponse> {
+    use typhon_types::{
+        data::{ActionIdentifier, TaskIdentifier},
+        handles::Log,
+    };
+    match handle.identifier {
+        TaskIdentifier::Action(identifier) => {
+            use typhon_types::responses::Response;
+            let Ok(Response::Log(contents)) =
+                handle_request(user, Request::Job(handle.job.clone(), Job::LogBegin)).await
+            else {
+                None?
+            };
+            Some(HttpResponse::Ok().body(web::Bytes::from(contents?)))
+        }
+        TaskIdentifier => {
+            use crate::nix;
+            use futures::stream::StreamExt;
+            let Ok(job) = crate::jobs::Job::get(&handle.job).await else {
+                None?
+            };
+            let path = job.job.build_drv;
+            let drv = nix::DrvPath::new(&path);
+            match BUILD_LOGS.listen(&drv).await {
+                Some(stream) => {
+                    let stream = stream.map(|x: String| {
+                        Ok::<_, actix_web::Error>(actix_web::web::Bytes::from(format!("{}\n", x)))
+                    });
+                    Some(HttpResponse::Ok().streaming(stream))
+                }
+                None => match nix::log(path).await {
+                    Ok(log) => Some(HttpResponse::Ok().body(web::Bytes::from(log))),
+                    Err(_) => None,
+                },
+            }
+        }
     }
 }
 
@@ -289,10 +332,11 @@ pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope(&format!("{}/api", SETTINGS.webroot))
             .route("", web::post().to(raw_request))
-            .route("/evaluations", web::post().to(list_evaluations))
+            .route("/evaluations", web::post().to(search_evaluations))
             .route("/events", web::get().to(events))
             .route("/projects", web::get().to(list_projects))
             .route("/drv-log{path:.*}", web::get().to(drv_log))
+            .route("/log", web::post().to(job_live_log))
             .service(
                 web::scope("/projects/{project}")
                     .route("", web::get().to(project_info))
@@ -316,8 +360,8 @@ pub fn config(cfg: &mut web::ServiceConfig) {
                                         web::scope("/jobs/{system}/{job}")
                                             .route("", web::get().to(job_info))
                                             .route("/cancel", web::post().to(job_cancel))
-                                            .route("/logs/begin", web::get().to(job_log_begin))
-                                            .route("/logs/end", web::get().to(job_log_end))
+                                            // .route("/logs/begin", web::get().to(job_log_begin))
+                                            // .route("/logs/end", web::get().to(job_log_end))
                                             .route("/dist/{path:.*}", web::get().to(dist)),
                                     ),
                             ),

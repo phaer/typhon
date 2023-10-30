@@ -7,12 +7,75 @@ use crate::nix;
 use crate::responses;
 use crate::schema;
 use crate::{log_event, Event};
-use crate::{JOBS_BEGIN, JOBS_BUILD, JOBS_END};
+use crate::{JOBS_BEGIN, JOBS_BUILD, JOBS_END, JOBS_TASKS};
 
 use diesel::prelude::*;
 use serde_json::{json, Value};
 
 use std::path::Path;
+use typhon_types::data;
+
+pub fn mk_action_status(status: &str, start: Option<i64>, end: Option<i64>) -> data::TaskStatus {
+    use data::TaskStatus;
+    let to_u64 = |o: Option<i64>| {
+        o.map(|n| u64::try_from(n).expect("Job: broken invariant: negative `start` or `end`"))
+    };
+    let start = to_u64(start);
+    let end = to_u64(end);
+    let time_range = match (start, end) {
+        (Some(start), Some(end)) => Some(data::TimeRange { start, end }),
+        _ => None,
+    };
+    match status {
+        "success" => TaskStatus::Success(time_range.expect(
+            "Job: broken invariant: a successful action should have a `start` and a `end`",
+        )),
+        "error" => TaskStatus::Error(
+            time_range
+                .expect("Job: broken invariant: a failed action should have a `start` and a `end`"),
+        ),
+        "pending" => TaskStatus::Pending { start },
+        "canceled" => TaskStatus::Canceled(time_range),
+        status => panic!("Job: unknown status `{status}`"),
+    }
+}
+
+impl From<models::Job> for data::Job {
+    fn from(j: models::Job) -> Self {
+        macro_rules! assert_unsigned {
+            ($j:ident . $f: ident) => {{
+                let msg = concat!("Log: broken invariant: negative `", stringify!(f), "`");
+                $j.$f.try_into().ok().expect(msg)
+            }};
+        }
+        let begin_s =
+            mk_action_status(&j.begin_status, j.begin_time_started, j.begin_time_finished);
+        let end_s = mk_action_status(&j.end_status, j.end_time_started, j.end_time_finished);
+        let build_s =
+            mk_action_status(&j.build_status, j.build_time_started, j.build_time_finished);
+        data::Job {
+            begin: data::Action {
+                identifier: ActionIdentifier::Begin,
+                status: begin_s,
+            },
+            end: data::Action {
+                identifier: ActionIdentifier::End,
+                status: end_s,
+            },
+            build: data::Build {
+                drv: j.build_drv,
+                out: j.build_out,
+                status: build_s,
+            },
+            dist: j.dist,
+            name: data::JobSystemName {
+                name: j.name,
+                system: j.system,
+            },
+            time_created: assert_unsigned!(j.time_created),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Job {
@@ -20,6 +83,99 @@ pub struct Job {
     pub evaluation: models::Evaluation,
     pub jobset: models::Jobset,
     pub project: models::Project,
+}
+
+use typhon_types::data::{ActionIdentifier, TaskIdentifier, TaskKind, TaskRef};
+
+impl Job {
+    pub fn get_task_ref(&self, identifier: TaskIdentifier) -> TaskRef {
+        let j = self.job.clone();
+        let (kind, status) = match identifier {
+            TaskIdentifier::Action(identifier) => {
+                let status = match &identifier {
+                    ActionIdentifier::Begin => mk_action_status(
+                        &j.begin_status,
+                        j.begin_time_started,
+                        j.begin_time_finished,
+                    ),
+                    ActionIdentifier::End => {
+                        mk_action_status(&j.end_status, j.end_time_started, j.end_time_finished)
+                    }
+                };
+                (TaskKind::Action { identifier }, status)
+            }
+            TaskIdentifier::Build => (
+                TaskKind::Build {
+                    drv: j.build_drv.clone(),
+                    out: j.build_out.clone(),
+                },
+                mk_action_status(&j.build_status, j.build_time_started, j.build_time_finished),
+            ),
+        };
+        TaskRef { kind, status }
+    }
+    pub async fn set_task_ref(&mut self, task: TaskRef, conn: &mut SqliteConnection) {
+        use data::TaskStatus;
+        let (start, end) = match task.status.clone() {
+            TaskStatus::Canceled(Some(r)) | TaskStatus::Success(r) | TaskStatus::Error(r) => {
+                (Some(r.start), Some(r.end))
+            }
+            TaskStatus::Pending { start } => (start, None),
+            TaskStatus::Canceled(None) => (None, None),
+        };
+        match task.kind {
+            TaskKind::Action {
+                identifier: ActionIdentifier::Begin,
+            } => {
+                let job = &mut self.job;
+                job.begin_status = task.status.tag().to_string();
+                job.begin_time_started = start.map(|n| n as i64);
+                job.begin_time_finished = end.map(|n| n as i64);
+                let job = job.clone();
+                let _ = diesel::update(&job)
+                    .set((
+                        schema::jobs::begin_status.eq(&job.begin_status),
+                        schema::jobs::begin_time_started.eq(&job.begin_time_started),
+                        schema::jobs::begin_time_finished.eq(&job.begin_time_finished),
+                    ))
+                    .execute(conn);
+            }
+            TaskKind::Action {
+                identifier: ActionIdentifier::End,
+            } => {
+                let job = &mut self.job;
+                job.end_status = task.status.tag().to_string();
+                job.end_time_started = start.map(|n| n as i64);
+                job.end_time_finished = end.map(|n| n as i64);
+                let job = job.clone();
+                let _ = diesel::update(&job)
+                    .set((
+                        schema::jobs::end_status.eq(&job.end_status),
+                        schema::jobs::end_time_started.eq(&job.end_time_started),
+                        schema::jobs::end_time_finished.eq(&job.end_time_finished),
+                    ))
+                    .execute(conn);
+            }
+            TaskKind::Build { drv, out } => {
+                let job = &mut self.job;
+                job.build_out = out;
+                job.build_drv = drv;
+                job.build_status = task.status.tag().to_string();
+                job.build_time_started = start.map(|n| n as i64);
+                job.build_time_finished = end.map(|n| n as i64);
+                let job = job.clone();
+                let _ = diesel::update(&job)
+                    .set((
+                        schema::jobs::build_out.eq(&job.build_out),
+                        schema::jobs::build_drv.eq(&job.build_drv),
+                        schema::jobs::build_status.eq(&job.build_status),
+                        schema::jobs::build_time_started.eq(&job.build_time_started),
+                        schema::jobs::build_time_finished.eq(&job.build_time_finished),
+                    ))
+                    .execute(conn);
+            }
+        }
+    }
 }
 
 impl Job {
@@ -88,22 +244,7 @@ impl Job {
     }
 
     pub fn info(&self) -> responses::JobInfo {
-        responses::JobInfo {
-            begin_status: self.job.begin_status.clone(),
-            begin_time_finished: self.job.begin_time_finished,
-            begin_time_started: self.job.begin_time_started,
-            build_drv: self.job.build_drv.clone(),
-            build_out: self.job.build_out.clone(),
-            build_status: self.job.build_status.clone(),
-            build_time_finished: self.job.build_time_finished,
-            build_time_started: self.job.build_time_started,
-            dist: self.job.dist,
-            end_status: self.job.end_status.clone(),
-            end_time_finished: self.job.end_time_finished,
-            end_time_started: self.job.end_time_started,
-            system: self.job.system.clone(),
-            time_created: self.job.time_created,
-        }
+        self.job.clone().into()
     }
 
     pub async fn log_begin(&self) -> Result<Option<String>, Error> {
@@ -139,7 +280,7 @@ impl Job {
         }))
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) -> Result</*TODO: return `data::TaskStatus`*/ (), Error> {
         use crate::time::now;
 
         let drv = nix::DrvPath::new(&self.job.build_drv);

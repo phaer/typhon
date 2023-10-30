@@ -6,6 +6,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
+use typhon_types::responses::JobSystemName;
 
 use std::{collections::HashMap, ffi::OsStr, process::Stdio};
 
@@ -319,8 +320,11 @@ pub async fn derivation(expr: Expr) -> Result<Derivation, Error> {
 pub async fn eval(url: &str, path: &str, flake: bool) -> Result<serde_json::Value, Error> {
     Ok(serde_json::from_str(
         &(if flake {
-            Command::nix(["eval", "--json", &format!("{}#{}", url, path)])
+            let cmd = Command::nix(["eval", "--json", &format!("{}#{}", url, path)]);
+            eprintln!("command:{:#?}", cmd);
+            cmd
         } else {
+            eprintln!("NOOOO");
             Command::nix([
                 "eval",
                 "--json",
@@ -337,31 +341,36 @@ pub async fn eval(url: &str, path: &str, flake: bool) -> Result<serde_json::Valu
     )?)
 }
 
-pub type NewJobs = HashMap<(String, String), (Derivation, bool)>;
+pub struct JobDerivation {
+    pub drv: Derivation,
+    pub has_dist: bool,
+}
+
+// TODO: Isn't that exactly what we call a [Jobset]?
+pub type NewJobs = HashMap<JobSystemName, JobDerivation>;
+const TYPHON_JOBS_KEY: &str = "typhonJobs";
+const TYPHON_DIST_KEY: &str = "typhonDist";
 
 pub async fn eval_jobs(url: &str, flake: bool) -> Result<NewJobs, Error> {
-    let json = eval(url, "typhonJobs", flake).await?;
-    let mut jobs: HashMap<(String, String), (Derivation, bool)> = HashMap::new();
+    let json = eval(url, TYPHON_JOBS_KEY, flake).await?;
+    let mut jobs = NewJobs::new();
     for system in json.as_object().unwrap().keys() {
-        for name in json[system].as_object().unwrap().keys() {
+        for name in json[system].as_object().unwrap().keys().cloned() {
+            let path = format!("{TYPHON_JOBS_KEY}.{}.{}", system, &name);
+            let has_dist_path = format!("{}.{TYPHON_DIST_KEY}", &path);
+            let drv = {
+                let url = url.to_string();
+                derivation(Expr::Flake { flake, path, url }).await?
+            };
+            let has_dist = eval(url, &has_dist_path, flake)
+                .await
+                .ok()
+                .and_then(|json| json.as_bool())
+                .unwrap_or(false);
+            let system = system.clone();
             jobs.insert(
-                (system.clone(), name.clone()),
-                (
-                    derivation(Expr::Flake {
-                        flake,
-                        url: url.to_string(),
-                        path: format!("typhonJobs.{system}.{name}"),
-                    })
-                    .await?,
-                    eval(
-                        url,
-                        &format!("typhonJobs.{system}.{name}.passthru.typhonDist"),
-                        flake,
-                    )
-                    .await
-                    .map(|json| json.as_bool().unwrap_or(false))
-                    .unwrap_or(false),
-                ),
+                JobSystemName { system, name },
+                JobDerivation { drv, has_dist },
             );
         }
     }
@@ -391,6 +400,8 @@ pub async fn lock(url: &String) -> Result<String, Error> {
         "lock",
         "--output-lock-file",
         "/dev/stdout",
+        "--update-input",
+        "x",
         "--override-input",
         "x",
         url,

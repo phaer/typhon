@@ -37,10 +37,10 @@ async fn main() -> std::io::Result<()> {
             .run(),
     );
 
-    // Graceful shutdown
+    // // Graceful shutdown
     let _ = tokio::signal::ctrl_c().await;
-    actix.abort();
-    typhon::shutdown().await;
+    // actix.abort();
+    // typhon::shutdown().await;
 
     Ok(())
 }

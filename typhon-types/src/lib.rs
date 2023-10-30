@@ -1,7 +1,7 @@
 pub mod handles {
     use serde::{Deserialize, Serialize};
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct Project {
         pub name: String,
     }
@@ -16,27 +16,26 @@ pub mod handles {
         }
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct Jobset {
         pub project: Project,
         pub name: String,
     }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct Evaluation {
         pub jobset: Jobset,
         pub num: i64,
     }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct Job {
         pub evaluation: Evaluation,
         pub system: String,
         pub name: String,
     }
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum Log {
-        Begin(Job),
-        End(Job),
-        Eval(Evaluation),
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct Log {
+        pub identifier: crate::data::TaskIdentifier,
+        pub job: Job,
     }
 
     macro_rules! impl_display {
@@ -75,20 +74,17 @@ pub mod handles {
     impl_display!(Log);
     impl From<Log> for Vec<String> {
         fn from(x: Log) -> Self {
-            use Log::*;
-            vec![
-                match x {
-                    Begin(_) => "begin",
-                    End(_) => "end",
-                    Eval(_) => "eval",
+            use crate::data::{ActionIdentifier, TaskIdentifier};
+            [
+                x.job.into(),
+                vec![match x.identifier {
+                    TaskIdentifier::Action(ActionIdentifier::Begin) => "begin",
+                    TaskIdentifier::Action(ActionIdentifier::End) => "end",
+                    TaskIdentifier::Build => "build",
                 }
-                .into(),
-                match x {
-                    Begin(h) => h.to_string(),
-                    End(h) => h.to_string(),
-                    Eval(h) => h.to_string(),
-                },
+                .to_string()],
             ]
+            .concat()
         }
     }
 
@@ -123,21 +119,21 @@ pub mod requests {
     use crate::handles;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct EvaluationSearch {
         pub jobset_name: Option<String>,
         pub limit: u8,
-        pub offset: i32,
+        pub offset: u32,
         pub project_name: Option<String>,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct ProjectDecl {
         pub flake: bool,
         pub url: String,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Project {
         Delete,
         Info,
@@ -147,20 +143,20 @@ pub mod requests {
         UpdateJobsets,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Jobset {
         Evaluate(bool),
         Info,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Evaluation {
         Cancel,
         Info,
         Log,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Job {
         Cancel,
         Info,
@@ -168,9 +164,9 @@ pub mod requests {
         LogEnd,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Request {
-        ListEvaluations(EvaluationSearch),
+        SearchEvaluations(EvaluationSearch), // Rename to EvaluationSearch
         ListProjects,
         CreateProject { name: String, decl: ProjectDecl },
         Project(handles::Project, Project),
@@ -183,7 +179,7 @@ pub mod requests {
     impl std::fmt::Display for Request {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             match self {
-                Request::ListEvaluations(_) => write!(f, "Search through evaluations"),
+                Request::SearchEvaluations(_) => write!(f, "Search through evaluations"),
                 Request::ListProjects => write!(f, "List projects"),
                 Request::CreateProject { name, decl } => {
                     write!(
@@ -204,11 +200,177 @@ pub mod requests {
     }
 }
 
+pub mod data {
+    use crate::responses;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct JobSystemName {
+        pub system: String,
+        pub name: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct TimeRange {
+        pub start: u64,
+        pub end: u64,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub enum TaskStatusKind {
+        Success,
+        Pending,
+        Error,
+        Canceled,
+    }
+
+    impl From<TaskStatus> for TaskStatusKind {
+        fn from(s: TaskStatus) -> Self {
+            match s {
+                TaskStatus::Success(..) => Self::Success,
+                TaskStatus::Pending { .. } => Self::Pending,
+                TaskStatus::Error(..) => Self::Error,
+                TaskStatus::Canceled(..) => Self::Canceled,
+            }
+        }
+    }
+
+    impl core::cmp::PartialOrd for TaskStatusKind {
+        fn partial_cmp(&self, rhs: &Self) -> Option<core::cmp::Ordering> {
+            Some(self.cmp(rhs))
+        }
+    }
+    impl core::cmp::Ord for TaskStatusKind {
+        fn cmp(&self, rhs: &Self) -> core::cmp::Ordering {
+            use core::cmp::Ordering;
+            if self == rhs {
+                return Ordering::Equal;
+            }
+            match (self, rhs) {
+                (TaskStatusKind::Error, _) => Ordering::Greater,
+                (_, TaskStatusKind::Error) => Ordering::Less,
+                (TaskStatusKind::Pending, _) => Ordering::Greater,
+                (_, TaskStatusKind::Pending) => Ordering::Less,
+                (TaskStatusKind::Canceled, _) => Ordering::Greater,
+                (_, TaskStatusKind::Canceled) => Ordering::Less,
+                (TaskStatusKind::Success, TaskStatusKind::Success) => Ordering::Greater,
+            }
+        }
+    }
+
+    impl From<responses::JobInfo> for TaskStatusKind {
+        fn from(job: responses::JobInfo) -> Self {
+            let begin: TaskStatusKind = job.begin.status.into();
+            let end: TaskStatusKind = job.end.status.into();
+            let build: TaskStatusKind = job.build.status.into();
+            begin.max(end).max(build)
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub enum TaskStatus {
+        Success(TimeRange),
+        Pending { start: Option<u64> },
+        Error(TimeRange),
+        Canceled(Option<TimeRange>),
+    }
+
+    impl TaskStatus {
+        pub fn tag(&self) -> &str {
+            match self {
+                TaskStatus::Success(..) => "success",
+                TaskStatus::Pending { .. } => "pending",
+                TaskStatus::Error(..) => "error",
+                TaskStatus::Canceled(..) => "canceled",
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub enum ActionIdentifier {
+        Begin,
+        End,
+    }
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub enum TaskIdentifier {
+        Action(ActionIdentifier),
+        Build,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub enum TaskKind {
+        Action { identifier: ActionIdentifier },
+        Build { drv: String, out: String },
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct TaskRef {
+        pub kind: TaskKind,
+        pub status: TaskStatus,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct Build {
+        pub drv: String,
+        pub out: String,
+        pub status: TaskStatus,
+    }
+
+    impl From<&TaskRef> for TaskIdentifier {
+        fn from(tr: &TaskRef) -> Self {
+            match tr.kind {
+                TaskKind::Action { identifier } => TaskIdentifier::Action(identifier),
+                TaskKind::Build { .. } => TaskIdentifier::Build,
+            }
+        }
+    }
+    impl From<Build> for TaskRef {
+        fn from(Build { drv, out, status }: Build) -> Self {
+            Self {
+                kind: TaskKind::Build { drv, out },
+                status,
+            }
+        }
+    }
+
+    impl From<Action> for TaskRef {
+        fn from(Action { identifier, status }: Action) -> Self {
+            Self {
+                kind: TaskKind::Action { identifier },
+                status,
+            }
+        }
+    }
+
+    impl From<Job> for [TaskRef; 3] {
+        fn from(job: Job) -> Self {
+            [job.begin.into(), job.build.into(), job.end.into()]
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct Action {
+        pub identifier: ActionIdentifier,
+        pub status: TaskStatus,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct Job {
+        pub begin: Action,
+        pub build: Build,
+        pub end: Action,
+        pub dist: bool,
+        pub name: JobSystemName,
+        pub time_created: u64,
+    }
+}
+
 pub mod responses {
+    pub use super::data::Job as JobInfo;
+    pub use super::data::{TaskStatus, TimeRange};
     use crate::handles;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct ProjectMetadata {
         #[serde(default)]
         pub description: String,
@@ -218,7 +380,7 @@ pub mod responses {
         pub title: String,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct ProjectInfo {
         pub actions_path: Option<String>,
         pub flake: bool,
@@ -229,53 +391,32 @@ pub mod responses {
         pub url_locked: String,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub struct JobsetInfo {
-        pub last_evaluation: Option<(i64, i64)>,
+        pub last_evaluation: Option<(handles::Evaluation, EvaluationInfo<()>)>,
+        pub evaluations_count: u32,
         pub flake: bool,
         pub url: String,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct JobSystemName {
-        pub system: String,
-        pub name: String,
-    }
+    pub use crate::data::JobSystemName;
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct EvaluationInfo {
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+    pub struct EvaluationInfo<Jobs = Vec<JobSystemName>> {
         pub actions_path: Option<String>,
         pub flake: bool,
-        pub jobs: Vec<JobSystemName>,
-        pub status: String,
+        pub jobs: Jobs,
+        pub status: TaskStatus,
         pub time_created: i64,
         pub time_finished: Option<i64>,
         pub url: String,
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct JobInfo {
-        pub begin_status: String,
-        pub begin_time_finished: Option<i64>,
-        pub begin_time_started: Option<i64>,
-        pub build_drv: String,
-        pub build_out: String,
-        pub build_status: String,
-        pub build_time_finished: Option<i64>,
-        pub build_time_started: Option<i64>,
-        pub dist: bool,
-        pub end_status: String,
-        pub end_time_finished: Option<i64>,
-        pub end_time_started: Option<i64>,
-        pub system: String,
-        pub time_created: i64,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum Response {
         Ok,
-        ListEvaluations(Vec<(handles::Evaluation, i64)>),
-        ListProjects(Vec<(String, ProjectMetadata)>),
+        SearchEvaluations(Vec<(handles::Evaluation, EvaluationInfo<()>)>),
+        ListProjects(Vec<(handles::Project, ProjectMetadata)>),
         ProjectInfo(ProjectInfo),
         ProjectUpdateJobsets(Vec<String>),
         JobsetEvaluate(crate::handles::Evaluation),
@@ -286,7 +427,7 @@ pub mod responses {
         Login { token: String },
     }
 
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
     pub enum ResponseError {
         BadRequest(String),
         InternalError,

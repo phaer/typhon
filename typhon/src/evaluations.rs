@@ -10,7 +10,8 @@ use crate::schema;
 use crate::Event;
 use crate::EVALUATIONS;
 
-use typhon_types::*;
+use crate::nix::JobDerivation;
+use typhon_types::{responses::JobSystemName, *};
 
 use diesel::prelude::*;
 
@@ -80,28 +81,34 @@ impl Evaluation {
         ))
     }
 
+    pub fn generic_info<Jobs>(&self, jobs: Jobs) -> responses::EvaluationInfo<Jobs> {
+        responses::EvaluationInfo {
+            actions_path: self.evaluation.actions_path.clone(),
+            flake: self.jobset.flake,
+            jobs,
+            status: jobs::mk_action_status(
+                &self.evaluation.status,
+                Some(self.evaluation.time_created),
+                Some(self.evaluation.time_created),
+                // TODO: `time_finished` is never updated! self.evaluation.time_finished,
+            ),
+            time_created: self.evaluation.time_created,
+            time_finished: self.evaluation.time_finished,
+            url: self.evaluation.url.clone(),
+        }
+    }
+
     pub async fn info(&self) -> Result<responses::EvaluationInfo, Error> {
-        use typhon_types::responses::JobSystemName;
-        let mut conn = connection().await;
         let jobs = schema::jobs::table
             .filter(schema::jobs::evaluation_id.eq(self.evaluation.id))
-            .load::<models::Job>(&mut *conn)?
+            .load::<models::Job>(&mut *connection().await)?
             .iter()
             .map(|job| JobSystemName {
                 system: job.system.clone(),
                 name: job.name.clone(),
             })
             .collect();
-        drop(conn);
-        Ok(responses::EvaluationInfo {
-            actions_path: self.evaluation.actions_path.clone(),
-            flake: self.jobset.flake,
-            jobs,
-            status: self.evaluation.status.clone(),
-            time_created: self.evaluation.time_created,
-            time_finished: self.evaluation.time_finished,
-            url: self.evaluation.url.clone(),
-        })
+        Ok(self.generic_info(jobs))
     }
 
     pub async fn log(&self) -> Result<Option<String>, Error> {
@@ -113,20 +120,22 @@ impl Evaluation {
         Ok(stderr)
     }
 
-    pub async fn run(&self) -> Result<(), Error> {
-        let self_1 = self.clone();
-        let self_2 = self.clone();
-
-        let task = async move { nix::eval_jobs(&self_1.evaluation.url, self_1.jobset.flake).await };
+    pub async fn run(self) -> Result<(), Error> {
+        let task = {
+            let url = self.evaluation.url.clone();
+            let flake = self.jobset.flake.clone();
+            async move { nix::eval_jobs(&url, flake).await }
+        };
+        let evaluation_id = self.evaluation.id.clone();
         let finish = move |r: Option<Result<nix::NewJobs, nix::Error>>| async move {
             // TODO: when logging, hide internal error messages?
             let status = match r {
                 Some(Ok(new_jobs)) => {
-                    match self_2.run_aux(new_jobs).await {
+                    match self.run_aux(new_jobs).await {
                         Ok(()) => "success",
                         Err(e) => {
                             let mut conn = connection().await;
-                            diesel::update(schema::logs::dsl::logs.find(self_2.evaluation.log_id))
+                            diesel::update(schema::logs::dsl::logs.find(self.evaluation.log_id))
                                 .set(schema::logs::stderr.eq(e.to_string()))
                                 .execute(&mut *conn)
                                 .unwrap(); // FIXME: no unwrap
@@ -136,7 +145,7 @@ impl Evaluation {
                 }
                 Some(Err(e)) => {
                     let mut conn = connection().await;
-                    diesel::update(schema::logs::dsl::logs.find(self_2.evaluation.log_id))
+                    diesel::update(schema::logs::dsl::logs.find(self.evaluation.log_id))
                         .set(schema::logs::stderr.eq(e.to_string()))
                         .execute(&mut *conn)
                         .unwrap(); // FIXME: no unwrap
@@ -146,17 +155,15 @@ impl Evaluation {
             };
 
             // update the evaluation status
-            let mut conn = connection().await;
-            let _ = diesel::update(&self_2.evaluation)
+            let _ = diesel::update(&self.evaluation)
                 .set(schema::evaluations::status.eq(status))
-                .execute(&mut *conn);
-            drop(conn);
+                .execute(&mut *connection().await);
 
             gcroots::update().await;
 
-            log_event(Event::EvaluationFinished(self_2.handle())).await;
+            log_event(Event::EvaluationFinished(self.handle())).await;
         };
-        EVALUATIONS.run(self.evaluation.id, task, finish).await;
+        EVALUATIONS.run(evaluation_id, task, finish).await;
 
         Ok(())
     }
@@ -167,41 +174,43 @@ impl Evaluation {
         let created_jobs = conn.transaction::<Vec<jobs::Job>, Error, _>(|conn| {
             new_jobs
                 .drain()
-                .map(|((system, name), (drv, dist))| {
-                    let begin_log = diesel::insert_into(schema::logs::dsl::logs)
-                        .values(&models::NewLog { stderr: None })
-                        .get_result::<models::Log>(&mut *conn)?;
-                    let end_log = diesel::insert_into(schema::logs::dsl::logs)
-                        .values(&models::NewLog { stderr: None })
-                        .get_result::<models::Log>(&mut *conn)?;
-                    let job = diesel::insert_into(schema::jobs::table)
-                        .values(&models::NewJob {
-                            begin_log_id: begin_log.id,
-                            begin_status: "pending",
-                            build_drv: &String::from(drv.path.clone()).as_str(),
-                            build_out: drv
-                                .outputs
-                                .iter()
-                                .last()
-                                .expect("TODO: derivations can have multiple outputs")
-                                .1,
-                            build_status: "pending",
-                            dist,
-                            end_log_id: end_log.id,
-                            end_status: "pending",
-                            evaluation_id: self.evaluation.id,
-                            name: &name,
-                            system: &system,
-                            time_created: now,
+                .map(
+                    |(JobSystemName { system, name }, JobDerivation { drv, has_dist })| {
+                        let begin_log = diesel::insert_into(schema::logs::dsl::logs)
+                            .values(&models::NewLog { stderr: None })
+                            .get_result::<models::Log>(&mut *conn)?;
+                        let end_log = diesel::insert_into(schema::logs::dsl::logs)
+                            .values(&models::NewLog { stderr: None })
+                            .get_result::<models::Log>(&mut *conn)?;
+                        let job = diesel::insert_into(schema::jobs::table)
+                            .values(&models::NewJob {
+                                begin_log_id: begin_log.id,
+                                begin_status: "pending",
+                                build_drv: &String::from(drv.path.clone()).as_str(),
+                                build_out: drv
+                                    .outputs
+                                    .iter()
+                                    .last()
+                                    .expect("TODO: derivations can have multiple outputs")
+                                    .1,
+                                build_status: "pending",
+                                dist: has_dist,
+                                end_log_id: end_log.id,
+                                end_status: "pending",
+                                evaluation_id: self.evaluation.id,
+                                name: &name,
+                                system: &system,
+                                time_created: now,
+                            })
+                            .get_result(conn)?;
+                        Ok(jobs::Job {
+                            project: self.project.clone(),
+                            jobset: self.jobset.clone(),
+                            evaluation: self.evaluation.clone(),
+                            job,
                         })
-                        .get_result(conn)?;
-                    Ok(jobs::Job {
-                        project: self.project.clone(),
-                        jobset: self.jobset.clone(),
-                        evaluation: self.evaluation.clone(),
-                        job,
-                    })
-                })
+                    },
+                )
                 .collect()
         })?;
         drop(conn);
@@ -215,8 +224,7 @@ impl Evaluation {
 
     pub async fn search(
         search: &requests::EvaluationSearch,
-    ) -> Result<Vec<(handles::Evaluation, i64)>, Error> {
-        let mut conn = connection().await;
+    ) -> Result<Vec<(handles::Evaluation, responses::EvaluationInfo<()>)>, Error> {
         let mut query = schema::evaluations::table
             .inner_join(schema::jobsets::table.inner_join(schema::projects::table))
             .into_boxed();
@@ -226,20 +234,18 @@ impl Evaluation {
         if let Some(name) = &search.jobset_name {
             query = query.filter(schema::jobsets::name.eq(name));
         }
-        query = query
+        Ok(query
             .order(schema::evaluations::time_created.desc())
             .offset(search.offset as i64)
-            .limit(search.limit as i64);
-        let mut evaluations =
-            query.load::<(models::Evaluation, (models::Jobset, models::Project))>(&mut *conn)?;
-        drop(conn);
-        let mut res = Vec::new();
-        for (evaluation, (jobset, project)) in evaluations.drain(..) {
-            res.push((
-                handles::evaluation((project.name, jobset.name, evaluation.num)),
-                evaluation.time_created,
-            ));
-        }
-        Ok(res)
+            .limit(search.limit as i64)
+            .load(&mut *connection().await)?
+            .into_iter()
+            .map(|(evaluation, (jobset, project))| Evaluation {
+                evaluation,
+                jobset,
+                project,
+            })
+            .map(|eval| (eval.handle(), eval.generic_info(())))
+            .collect())
     }
 }

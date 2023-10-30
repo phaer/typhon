@@ -31,11 +31,16 @@ in rec {
   webapp = pkgs.mkShell {
     name = "typhon-webapp-devshell";
     packages =
-      rustPackages
+      [ (pkgs.writeShellScriptBin "rustfmt" ''
+           ${pkgs.leptosfmt}/bin/leptosfmt "$@"
+           ${pkgs.rustfmt}/bin/rustfmt "$@"
+        '') ]
+      ++ rustPackages
       ++ builtins.attrValues {
         inherit (pkgs.nodePackages) sass;
         inherit (pkgs) trunk nodejs;
-      };
+      }
+    ;
     RUSTFLAGS = "--cfg=web_sys_unstable_apis";
   };
 

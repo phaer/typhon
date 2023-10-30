@@ -93,7 +93,10 @@ pub static SETTINGS: Lazy<Settings> = Lazy::new(|| {
         webroot: args.webroot.clone(),
     }
 });
+
 pub static EVALUATIONS: Lazy<tasks::Tasks<i32>> = Lazy::new(tasks::Tasks::new);
+pub static JOBS_TASKS: Lazy<tasks::Tasks<(i32, typhon_types::data::TaskIdentifier)>> =
+    Lazy::new(tasks::Tasks::new);
 pub static JOBS_BEGIN: Lazy<tasks::Tasks<i32>> = Lazy::new(tasks::Tasks::new);
 pub static JOBS_BUILD: Lazy<tasks::Tasks<i32>> = Lazy::new(tasks::Tasks::new);
 pub static JOBS_END: Lazy<tasks::Tasks<i32>> = Lazy::new(tasks::Tasks::new);
@@ -150,7 +153,7 @@ impl FromRequest for User {
 pub fn authorize_request(user: &User, req: &requests::Request) -> bool {
     use requests::*;
     match req {
-        Request::ListEvaluations(_)
+        Request::SearchEvaluations(_)
         | Request::ListProjects
         | Request::Project(_, Project::Info)
         | Request::Jobset(_, Jobset::Info)
@@ -167,8 +170,8 @@ pub fn authorize_request(user: &User, req: &requests::Request) -> bool {
 pub async fn handle_request_aux(user: &User, req: &requests::Request) -> Result<Response, Error> {
     if authorize_request(user, req) {
         Ok(match req {
-            requests::Request::ListEvaluations(search) => {
-                Response::ListEvaluations(Evaluation::search(search).await?)
+            requests::Request::SearchEvaluations(search) => {
+                Response::SearchEvaluations(Evaluation::search(search).await?)
             }
             requests::Request::ListProjects => Response::ListProjects(Project::list().await?),
             requests::Request::CreateProject { name, decl } => {

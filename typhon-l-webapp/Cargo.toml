@@ -1,0 +1,37 @@
+[package]
+name = "leptos-tutorial"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+leptos = { version = "0.5.2", features = ["csr", "nightly"] }
+leptos_router = { version = "0.5.2", features = ["csr", "nightly"] }
+leptos_meta = { version = "0.5.2", features = ["csr", "nightly"] }
+wasm-streams = "0.3.0"
+gloo-console.workspace = true
+gloo-net.workspace = true
+gloo-storage.workspace = true
+gloo-utils.workspace = true
+web-sys.workspace = true
+serde-wasm-bindgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+wasm-bindgen-futures.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures-core.workspace = true
+typhon-types.workspace = true
+js-sys = "0.3.64"
+leptos_icons = { version = "0.1.0", features = ["BiHomeAltRegular", "BiCheckCircleSolid", "BiErrorCircleSolid", "BiTimerRegular", "BiRefreshRegular", "BiChevronRightRegular", "BiChevronUpRegular", "BiChevronDownRegular", "BiCogRegular", "BiSearchAltRegular", "BiLeftArrowAltSolid", "BiDotsHorizontalRoundedRegular", "BiRightArrowSolid", "BiCodeRegular", "BiGitBranchRegular", "BiLoaderAltRegular", "BiStopCircleRegular", "BiDownArrowSolid", "BiXCircleSolid"] }
+stylers = { version = "1.0.0-alpha" }
+im = "15.1.0"
+wasm-bindgen = "0.2.87"
+futures-util = "0.3.29"
+futures.workspace = true
+urlencoding = "2.1.3"
+
+[build-dependencies]
+stylers = {  version = "1.0.0-alpha" }

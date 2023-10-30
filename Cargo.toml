@@ -3,6 +3,7 @@ members = [
   "typhon",
   "typhon-types",
   "typhon-webapp",
+  "typhon-l-webapp",
   "typhon-api-client-test",
 ]
 default-members = [
@@ -43,4 +44,4 @@ surf = "2.3"
 time = "0.3"
 tokio = { version = "1.33", features = ["full"] }
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Navigator", "Clipboard", "ReadableStream", "Response"] }
+web-sys = { version = "0.3", features = ["Navigator", "Clipboard", "ReadableStream", "Response", "TextDecoder"] }

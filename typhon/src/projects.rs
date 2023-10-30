@@ -134,7 +134,7 @@ impl Project {
         })
     }
 
-    pub async fn list() -> Result<Vec<(String, responses::ProjectMetadata)>, Error> {
+    pub async fn list() -> Result<Vec<(handles::Project, responses::ProjectMetadata)>, Error> {
         let mut conn = connection().await;
         Ok(schema::projects::table
             .order(schema::projects::name.asc())
@@ -142,7 +142,7 @@ impl Project {
             .iter()
             .map(|project| {
                 (
-                    project.name.clone(),
+                    handles::project(project.name.clone()),
                     responses::ProjectMetadata {
                         title: project.title.clone(),
                         description: project.description.clone(),

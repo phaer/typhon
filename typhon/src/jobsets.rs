@@ -108,7 +108,7 @@ impl Jobset {
             evaluation,
         };
         log_event(Event::EvaluationNew(evaluation.handle())).await;
-        evaluation.run().await?;
+        evaluation.clone().run().await?;
 
         Ok(evaluation.handle())
     }
@@ -134,13 +134,22 @@ impl Jobset {
 
     pub async fn info(&self) -> Result<responses::JobsetInfo, Error> {
         let mut conn = connection().await;
-        let last_evaluation = schema::evaluations::table
-            .filter(schema::evaluations::jobset_id.eq(self.jobset.id))
+        let evaluations_req =
+            schema::evaluations::table.filter(schema::evaluations::jobset_id.eq(self.jobset.id));
+        let last_evaluation = evaluations_req
+            .clone()
             .first::<models::Evaluation>(&mut *conn)
             .optional()?
-            .map(|eval| (eval.num, eval.time_created));
+            .map(|evaluation| crate::evaluations::Evaluation {
+                evaluation,
+                jobset: self.jobset.clone(),
+                project: self.project.clone(),
+            })
+            .map(|eval| (eval.handle(), eval.generic_info(())));
+        let evaluations_count: i64 = evaluations_req.count().get_result(&mut *conn)?;
         Ok(responses::JobsetInfo {
             last_evaluation,
+            evaluations_count: evaluations_count as u32,
             flake: self.jobset.flake,
             url: self.jobset.url.clone(),
         })
