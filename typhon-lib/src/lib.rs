@@ -80,7 +80,6 @@ pub static POOL: Lazy<DbPool> = Lazy::new(pool);
 pub static SETTINGS: Lazy<Settings> = Lazy::new(|| Settings {
     hashed_password: std::env::var("HASHED_PASSWORD").unwrap(),
 });
-pub static RUNS: Lazy<TaskManager<i32>> = Lazy::new(|| TaskManager::new());
 pub static TASKS: Lazy<TaskManager<i32>> = Lazy::new(|| TaskManager::new());
 pub static LOGS: Lazy<logs::live::Cache<i32>> = Lazy::new(logs::live::Cache::new);
 pub static EVENT_LOGGER: Lazy<events::EventLogger> = Lazy::new(events::EventLogger::new);
@@ -294,7 +293,6 @@ pub fn webhook(
 pub async fn shutdown() {
     eprintln!("Typhon is shutting down...");
     tokio::join!(
-        RUNS.shutdown(),
         TASKS.shutdown(),
         LOGS.shutdown(),
         EVENT_LOGGER.shutdown(),

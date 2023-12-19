@@ -9,7 +9,6 @@ use crate::schema;
 use crate::tasks;
 use crate::Conn;
 use crate::POOL;
-use crate::RUNS;
 
 use typhon_types::data::TaskStatusKind;
 use typhon_types::*;
@@ -28,6 +27,7 @@ pub struct Run {
     pub job: models::Job,
     pub evaluation: models::Evaluation,
     pub project: models::Project,
+    pub task: tasks::Task,
 }
 
 enum Action {
@@ -48,7 +48,7 @@ impl Run {
             schema::tasks as build_task,
             schema::tasks as end_task,
         );
-        let (job, evaluation, project, run, begin, build, end) = schema::runs::table
+        let (job, evaluation, project, run, begin, build, end, task) = schema::runs::table
             .inner_join(
                 schema::jobs::table
                     .inner_join(schema::evaluations::table.inner_join(schema::projects::table)),
@@ -74,6 +74,7 @@ impl Run {
                         .eq(schema::runs::end_id))
                     .inner_join(end_task),
             )
+            .inner_join(schema::tasks::table)
             .filter(
                 schema::evaluations::uuid.eq(handle
                     .job
@@ -105,6 +106,7 @@ impl Run {
                     end_task.fields(schema::tasks::all_columns),
                 )
                     .nullable(),
+                schema::tasks::all_columns,
             ))
             .first::<(
                 models::Job,
@@ -114,6 +116,7 @@ impl Run {
                 Option<(models::Action, models::Task)>,
                 Option<(models::Build, models::Task)>,
                 Option<(models::Action, models::Task)>,
+                models::Task,
             )>(conn)
             .optional()?
             .ok_or(Error::RunNotFound(handle.clone()))?;
@@ -136,6 +139,7 @@ impl Run {
             job,
             evaluation,
             project,
+            task: tasks::Task { task },
         })
     }
 
@@ -155,6 +159,7 @@ impl Run {
             begin,
             build,
             end,
+            task,
             ..
         } = self.clone();
         responses::RunInfo::new(
@@ -164,6 +169,7 @@ impl Run {
             begin.map(|actions::Action { action, task, .. }| (action, task.task)),
             build.map(|builds::Build { build, task }| (build, task.task)),
             end.map(|actions::Action { action, task, .. }| (action, task.task)),
+            task.task,
         )
     }
 
@@ -188,7 +194,7 @@ impl Run {
         log_event(Event::RunUpdated(self.handle()));
 
         // a waiter task
-        let run_run = async move {
+        let run_1 = async move {
             TASKS.wait(&action_begin.task.task.id).await;
             let res = build_handle.wait().await;
             match res {
@@ -199,7 +205,7 @@ impl Run {
         };
 
         // run the 'end' action
-        let finish_run = {
+        let finish_1 = {
             let self_ = self.clone();
             let finish_err = move |status| {
                 if let Some(status) = status {
@@ -210,13 +216,16 @@ impl Run {
                         .execute(&mut conn)?;
                     log_event(Event::RunUpdated(self_.handle()));
                 }
-                Ok::<_, Error>(())
+                Ok::<_, Error>(action_end.action.id)
             };
             move |status| {
                 finish_err(status).unwrap(); // FIXME
                 None::<()>
             }
         };
+
+        // another waiter task
+        let run_2 = |end_action_id| TAKS.wait(end_action_id);
 
         RUNS.run(self.run.id, (run_run, finish_run));
 

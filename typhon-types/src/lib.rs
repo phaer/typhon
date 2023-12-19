@@ -491,6 +491,7 @@ pub mod responses {
         pub begin: Option<ActionInfo>,
         pub build: Option<BuildInfo>,
         pub end: Option<ActionInfo>,
+        pub status: TaskStatus,
     }
 
     pub mod search {

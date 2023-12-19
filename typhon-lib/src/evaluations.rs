@@ -34,6 +34,7 @@ impl responses::RunInfo {
         begin: Option<(models::Action, models::Task)>,
         build: Option<(models::Build, models::Task)>,
         end: Option<(models::Action, models::Task)>,
+        task: models::Task,
     ) -> Self {
         let to_action_info =
             |(action, task): (models::Action, models::Task)| responses::ActionInfo {
@@ -55,6 +56,7 @@ impl responses::RunInfo {
                 status: task.status(),
             }),
             end: end.map(to_action_info),
+            status: task.status(),
         }
     }
 }
@@ -70,6 +72,7 @@ impl responses::JobInfo {
         begin: Option<(models::Action, models::Task)>,
         build: Option<(models::Build, models::Task)>,
         end: Option<(models::Action, models::Task)>,
+        task: models::Task,
     ) -> Self {
         let job_handle = handles::Job {
             evaluation: eval_handle.clone(),
@@ -82,7 +85,15 @@ impl responses::JobInfo {
             drv: job.drv,
             out: job.out,
             system: job.system,
-            last_run: responses::RunInfo::new(project_handle, &job_handle, run, begin, build, end),
+            last_run: responses::RunInfo::new(
+                project_handle,
+                &job_handle,
+                run,
+                begin,
+                build,
+                end,
+                task,
+            ),
             run_count: job.tries as u32,
         }
     }
@@ -142,7 +153,7 @@ impl Evaluation {
             schema::runs as subruns,
         );
         let mut query = schema::jobs::table
-            .inner_join(schema::runs::table)
+            .inner_join(schema::runs::table.inner_join(schema::tasks::table))
             .left_join(
                 begin_action
                     .on(begin_action
@@ -183,6 +194,7 @@ impl Evaluation {
             .select((
                 schema::jobs::all_columns,
                 schema::runs::all_columns,
+                schema::tasks::all_columns,
                 (
                     begin_action.fields(schema::actions::all_columns),
                     begin_task.fields(schema::tasks::all_columns),
@@ -202,7 +214,7 @@ impl Evaluation {
             .load(conn)?
             .into_iter()
             .map(
-                |(job, run, begin, build, end): (models::Job, models::Run, _, _, _)| {
+                |(job, run, task, begin, build, end): (models::Job, models::Run, _, _, _, _)| {
                     let (system, name) = (job.system.clone(), job.name.clone());
                     (
                         responses::JobSystemName { system, name },
@@ -214,6 +226,7 @@ impl Evaluation {
                             begin,
                             build,
                             end,
+                            task,
                         ),
                     )
                 },
