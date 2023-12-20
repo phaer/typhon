@@ -2,6 +2,7 @@ use crate::error::Error;
 use crate::log_event;
 use crate::models;
 use crate::schema;
+use crate::task_manager;
 use crate::Conn;
 use crate::POOL;
 use crate::{LOGS, TASKS};
@@ -11,10 +12,77 @@ use typhon_types::responses::TaskStatus;
 use typhon_types::Event;
 
 use diesel::prelude::*;
+use either::Either;
 use futures_core::stream::Stream;
 use std::future::Future;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
+
+pub trait TaskTrait {
+    type T: Send + 'static;
+    fn get(
+        self,
+    ) -> (
+        models::Task,
+        impl FnOnce(mpsc::UnboundedSender<String>) -> (impl Future<Output = Self::T> + Send + 'static),
+        impl FnOnce(
+                Option<Self::T>,
+            ) -> (
+                Event,
+                Either<impl TaskTrait + Send + 'static, TaskStatusKind>,
+            ) + Send
+            + 'static,
+    );
+}
+
+impl<T: TaskTrait> task_manager::Task for T {
+    type T = T::T;
+    fn get(
+        self,
+    ) -> (
+        impl Future<Output = Self::T> + Send + 'static,
+        impl FnOnce(Option<Self::T>) -> Option<impl task_manager::Task + Send + 'static>
+            + Send
+            + 'static,
+    ) {
+        let (task_model, run, finish) = self.get();
+        (
+            async move {
+                let (sender, mut receiver) = mpsc::unbounded_channel();
+                let (res, ()) = tokio::join!(run(sender), async move {
+                    while let Some(line) = receiver.recv().await {
+                        LOGS.send_line(&task_model.id, line);
+                    }
+                },);
+                res
+            },
+            |x| {
+                let (event, maybe_continue) = finish(x);
+                match maybe_continue {
+                    Either::Left(task) => Some(task),
+                    Either::Right(status_kind) => {
+                        let mut conn = POOL.get().unwrap();
+                        let time_finished = OffsetDateTime::now_utc();
+                        let stderr = LOGS.dump(&task_model.id).unwrap_or(String::new()); // FIXME
+                        let status = status_kind.into_task_status(start, Some(time_finished));
+                        LOGS.reset(&task_model.id);
+                        (Task { task: task_model })
+                            .set_status(&mut conn, status)
+                            .unwrap();
+                        diesel::update(
+                            schema::logs::table.filter(schema::logs::id.eq(task_model.log_id)),
+                        )
+                        .set(schema::logs::stderr.eq(stderr))
+                        .execute(&mut conn)
+                        .unwrap(); // TODO: handle error properly
+                        log_event(event);
+                        None
+                    }
+                }
+            },
+        )
+    }
+}
 
 #[derive(Clone)]
 pub struct Task {
