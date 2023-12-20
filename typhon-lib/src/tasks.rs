@@ -78,7 +78,7 @@ impl Task {
         F: (FnOnce(mpsc::UnboundedSender<String>) -> O) + Send + 'static,
         G: (FnOnce(Option<T>) -> (TaskStatusKind, Event)) + Send + Sync + 'static,
     >(
-        &self,
+        mut self,
         conn: &mut Conn,
         run: F,
         finish: G,
@@ -99,15 +99,14 @@ impl Task {
             res
         };
         let finish = {
-            let task = self.clone();
             move |res: Option<T>| {
                 let mut conn = POOL.get().unwrap();
                 let (status_kind, event) = finish(res);
                 let time_finished = OffsetDateTime::now_utc();
                 let stderr = LOGS.remove(&id).unwrap_or(String::new()); // FIXME
                 let status = status_kind.into_task_status(start, Some(time_finished));
-                task.set_status(&mut conn, status).unwrap();
-                diesel::update(schema::logs::table.filter(schema::logs::id.eq(task.task.log_id)))
+                self.set_status(&mut conn, status).unwrap();
+                diesel::update(schema::logs::table.filter(schema::logs::id.eq(self.task.log_id)))
                     .set(schema::logs::stderr.eq(stderr))
                     .execute(&mut conn)
                     .unwrap(); // TODO: handle error properly
@@ -128,15 +127,15 @@ impl Task {
         self.task.status()
     }
 
-    fn set_status(&self, conn: &mut Conn, status: TaskStatus) -> Result<(), Error> {
+    fn set_status(&mut self, conn: &mut Conn, status: TaskStatus) -> Result<(), Error> {
         let (started, finished) = status.times();
-        let _ = diesel::update(&self.task)
+        self.task = diesel::update(&self.task)
             .set((
                 schema::tasks::status.eq(i32::from(TaskStatusKind::from(&status))),
                 schema::tasks::time_started.eq(started.map(OffsetDateTime::unix_timestamp)),
                 schema::tasks::time_finished.eq(finished.map(OffsetDateTime::unix_timestamp)),
             ))
-            .execute(conn)?;
+            .get_result(conn)?;
         Ok(())
     }
 }

@@ -60,7 +60,7 @@ mod sandboxed_command {
     }
 }
 
-async fn action(
+async fn run_action(
     project: &projects::Project,
     path: &String,
     name: &String,
@@ -172,51 +172,52 @@ impl Action {
     }
 
     pub fn spawn<F: (FnOnce(Option<String>) -> TaskStatusKind) + Send + Sync + 'static>(
-        &self,
+        self,
         conn: &mut Conn,
         finish: F,
     ) -> Result<(), error::Error> {
         use crate::log_event;
 
-        let run = {
-            let self_ = self.clone();
-            move |sender| async move {
-                action(
-                    &projects::Project {
-                        refresh_task: None, // FIXME?
-                        project: self_.project.clone(),
-                    },
-                    &self_.action.path,
-                    &self_.action.name,
-                    &Value::from_str(&self_.action.input).unwrap(),
-                    sender,
-                )
-                .await
-                .map_err(|e| e.into())
-            }
+        let handle = self.handle();
+        let Action {
+            project,
+            action,
+            task,
+        } = self;
+
+        let run = move |sender| async move {
+            run_action(
+                &projects::Project {
+                    refresh_task: None, // FIXME?
+                    project: project.clone(),
+                },
+                &action.path,
+                &action.name,
+                &Value::from_str(&action.input).unwrap(),
+                sender,
+            )
+            .await
+            .map_err(|e| e.into())
         };
 
-        let finish = {
-            let handle = self.handle();
-            move |res: Option<Result<String, error::Error>>| {
-                let status = match res {
-                    Some(Err(_)) => {
-                        let _ = finish(None);
-                        TaskStatusKind::Error
-                    }
-                    Some(Ok(stdout)) => finish(Some(stdout)),
-                    None => {
-                        let _ = finish(None);
-                        TaskStatusKind::Canceled
-                    }
-                };
-                (status, Event::ActionFinished(handle))
-            }
+        let finish = move |res: Option<Result<String, error::Error>>| {
+            let status = match res {
+                Some(Err(_)) => {
+                    let _ = finish(None);
+                    TaskStatusKind::Error
+                }
+                Some(Ok(stdout)) => finish(Some(stdout)),
+                None => {
+                    let _ = finish(None);
+                    TaskStatusKind::Canceled
+                }
+            };
+            (status, Event::ActionFinished(handle))
         };
 
         log_event(Event::ActionNew(self.handle()));
 
-        self.task.run(conn, run, finish)?;
+        task.run(conn, run, finish)?;
 
         Ok(())
     }

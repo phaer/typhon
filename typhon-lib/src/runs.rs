@@ -30,6 +30,11 @@ pub struct Run {
     pub project: models::Project,
 }
 
+enum Action {
+    Begin,
+    End,
+}
+
 impl Run {
     //pub fn cancel(&self) {
     //    RUNS.cancel(self.run.id);
@@ -172,7 +177,7 @@ impl Run {
         let build_handle = BUILDS.run(drv);
 
         // run the 'begin' action
-        let action_begin = self.spawn_action(conn, "begin", TaskStatusKind::Pending)?;
+        let action_begin = self.spawn_action(conn, Action::Begin, TaskStatusKind::Pending)?;
 
         diesel::update(&self.run)
             .set((
@@ -199,7 +204,7 @@ impl Run {
             let finish_err = move |status| {
                 if let Some(status) = status {
                     let mut conn = POOL.get().unwrap();
-                    let action_end = self_.spawn_action(&mut conn, "end", status)?;
+                    let action_end = self_.spawn_action(&mut conn, Action::End, status)?;
                     diesel::update(&self_.run)
                         .set((schema::runs::end_id.eq(action_end.action.id),))
                         .execute(&mut conn)?;
@@ -236,7 +241,7 @@ impl Run {
     fn spawn_action(
         &self,
         conn: &mut Conn,
-        name: &str,
+        action: Action,
         status: TaskStatusKind,
     ) -> Result<actions::Action, Error> {
         use crate::projects;
