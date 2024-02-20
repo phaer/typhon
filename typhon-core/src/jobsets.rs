@@ -18,7 +18,7 @@ pub struct Jobset {
     pub project: models::Project,
 }
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub struct JobsetDecl {
     pub flake: bool,
     pub url: String,

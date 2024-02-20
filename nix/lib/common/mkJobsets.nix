@@ -20,12 +20,14 @@ utils: lib: {
 
         token=$(echo "$input" | jq -r '.secrets.${tokenName}')
 
-        curl -sf \
+        echo "hello"
+        raw="$(curl -v \
           --cacert ${utils.pkgs.${system}.cacert}/etc/ssl/certs/ca-bundle.crt \
           -H "Accept: application/json" \
           -H "Authorization: ${authorizationKeyword} $token" \
-          https://${api}/repos/${owner}/${repo}/branches \
-          | jq '.
+          https://${api}/repos/${owner}/${repo}/branches)"
+        echo "raw: $raw"
+        echo $raw | jq '.
             | map({ (.name): {
                 "url": ("${urlPrefix}" + .name),
                 "flake": ${utils.lib.boolToString flake}

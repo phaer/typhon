@@ -246,8 +246,10 @@ impl Project {
             move |output: Option<String>| {
                 let status = match output {
                     Some(output) => {
+                        println!("output: {:#?}", output);
                         let decls: Result<HashMap<String, jobsets::JobsetDecl>, Error> =
                             serde_json::from_str(&output).map_err(|_| Error::BadJobsetDecl(output));
+                        println!("decls: {:#?}", decls.as_ref());
                         match decls {
                             Ok(decls) => {
                                 if self_.finish_update_jobsets(decls).is_ok() {
