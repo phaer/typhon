@@ -27,7 +27,7 @@ utils: lib: {
           -H "Authorization: ${authorizationKeyword} $token" \
           https://${api}/repos/${owner}/${repo}/branches)"
         echo "raw: $raw"
-        echo $raw | jq '.
+        echo "$raw" | jq '.
             | map({ (.name): {
                 "url": ("${urlPrefix}" + .name),
                 "flake": ${utils.lib.boolToString flake}
