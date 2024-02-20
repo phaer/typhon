@@ -102,10 +102,12 @@ async fn action(
         "secrets": secrets,
     });
 
-    println!("path, name: {:#?}", (path, name));
+    println!("script: {}/{}", path, name);
     println!("action_input: {:#?}", action_input);
 
-    let mut child = sandboxed_command::new()
+    let mut cmd = sandboxed_command::new();
+    println!("sandbox: {:#?}", cmd);
+    let mut child = cmd
         .arg(&format!("{}/{}", path, name))
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
